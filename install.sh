@@ -268,7 +268,8 @@ configure_wipi() {
     "reconnect_attempts": 3,
     "reconnect_delay": 5,
     "preferred_networks": [],
-    "prioritize_clients": true
+    "prioritize_clients": true,
+    "ap_open": false
 }
 EOF
     
@@ -626,6 +627,22 @@ main() {
         rm -f /etc/wipi/config.json
         print_success "Old configuration file removed"
     fi
+    
+    # Clean up any existing NetworkManager connections related to WiPi
+    print_status "Cleaning up existing NetworkManager connections..."
+    
+    # Look for connections that might be related to WiPi
+    CONNECTIONS=$(nmcli -t -f NAME connection show)
+    
+    # Delete connections that match the pattern
+    for conn in $CONNECTIONS; do
+        if [[ "$conn" == "METAR-Pi"* || "$conn" == "Hotspot"* || "$conn" == "AccessPopup"* ]]; then
+            print_status "Removing NetworkManager connection: $conn"
+            nmcli connection delete "$conn" 2>/dev/null
+        fi
+    done
+    
+    print_success "NetworkManager connections cleaned up"
     
     # Install systemd service
     install_service

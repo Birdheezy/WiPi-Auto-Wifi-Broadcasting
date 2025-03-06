@@ -30,21 +30,27 @@ logger = logging.getLogger('wipi')
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "ap_ssid": "METAR-Pi",
-    "ap_password": "METAR-Pi",  # Default password, will be ignored if ap_open is True
-    "ap_ip_address": "192.168.8.1",
-    "check_interval": 120,  # seconds
+    "ap_ssid": "METAR-Pi",  # Hardcoded to user's desired SSID
+    "ap_password": "METAR-Pi",  # Hardcoded password
+    "ap_ip_address": "192.168.8.1",  # User's desired IP
+    "check_interval": 300,  # seconds
     "force_ap_mode": False,
-    "debug_mode": False,
-    "ap_open": True,  # New option: create open (no password) access point
-    "prioritize_clients": True  # New option: don't disconnect clients if they're connected
+    "debug_mode": False,  # Enable debug mode by default
+    "ap_channel": 6,
+    "ap_band": "bg",
+    "ap_hidden": False,
+    "reconnect_attempts": 3,
+    "reconnect_delay": 5,
+    "preferred_networks": [],
+    "prioritize_clients": True,
+    "ap_open": False
 }
 
 class WiPi:
     def __init__(self, config_path="/home/pi/wipi/config.json"):
         """Initialize WiPi with configuration."""
-        self.config_path = config_path
-        self.config = self._load_config()
+        # Simplified: just use the hardcoded DEFAULT_CONFIG
+        self.config = DEFAULT_CONFIG.copy()
         self.running = True
         self.ap_active = False
         
@@ -52,7 +58,7 @@ class WiPi:
         if self.config.get("debug_mode", False):
             logger.setLevel(logging.DEBUG)
             
-        logger.info("WiPi initialized with configuration: %s", self.config)
+        logger.info("WiPi initialized with hardcoded configuration: %s", self.config)
         
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -62,36 +68,6 @@ class WiPi:
         """Handle termination signals."""
         logger.info("Received signal %s, shutting down...", sig)
         self.running = False
-
-    def _load_config(self):
-        """Load configuration from file or use defaults."""
-        config = DEFAULT_CONFIG.copy()
-        try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
-                    user_config = json.load(f)
-                    config.update(user_config)
-                    logger.debug("Loaded configuration from %s", self.config_path)
-            else:
-                logger.warning("Configuration file not found at %s, using defaults", self.config_path)
-                # Create config directory if it doesn't exist
-                os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-                # Save default config
-                with open(self.config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-                    logger.info("Created default configuration at %s", self.config_path)
-        except Exception as e:
-            logger.error("Error loading configuration: %s", e)
-        return config
-
-    def save_config(self):
-        """Save current configuration to file."""
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(self.config, f, indent=4)
-                logger.debug("Saved configuration to %s", self.config_path)
-        except Exception as e:
-            logger.error("Error saving configuration: %s", e)
 
     def is_connected_to_wifi(self):
         """Check if connected to a WiFi network."""
@@ -251,40 +227,57 @@ class WiPi:
         try:
             logger.info("Activating access point mode")
             
-            # Check if AP connection exists
-            ap_exists = subprocess.run(
-                ["nmcli", "connection", "show", self.config["ap_ssid"]],
-                capture_output=True, text=True, check=False
-            ).returncode == 0
+            # First, check for and delete any existing AP connections with similar names
+            try:
+                # Get list of all connections
+                result = subprocess.run(
+                    ["nmcli", "-t", "-f", "NAME", "connection", "show"],
+                    capture_output=True, text=True, check=False
+                )
+                
+                # Look for connections that might be related to our AP
+                for conn in result.stdout.strip().split('\n'):
+                    if conn and (conn.startswith("METAR-Pi") or conn == "Hotspot" or conn == "AccessPopup"):
+                        logger.info(f"Removing existing connection: {conn}")
+                        subprocess.run(["nmcli", "connection", "delete", conn], check=False)
+            except Exception as e:
+                logger.warning(f"Error cleaning up existing connections: {e}")
             
-            if not ap_exists:
-                # Create AP connection
-                logger.info("Creating AP connection: %s", self.config["ap_ssid"])
+            # Create AP connection with explicit name "Hotspot"
+            logger.info(f"Creating AP connection: {self.config['ap_ssid']} (named 'Hotspot')")
+            
+            hotspot_command = [
+                "nmcli", "connection", "add",
+                "type", "wifi",
+                "ifname", "wlan0",
+                "con-name", "Hotspot",
+                "autoconnect", "no",
+                "ssid", self.config["ap_ssid"],
+                "mode", "ap"
+            ]
+            
+            # Add security settings if ap_open is False
+            if not self.config.get("ap_open", False):
+                hotspot_command.extend([
+                    "wifi-sec.key-mgmt", "wpa-psk",
+                    "wifi-sec.psk", self.config["ap_password"]
+                ])
+            
+            create_result = subprocess.run(hotspot_command, capture_output=True, text=True, check=False)
+            
+            if create_result.returncode != 0:
+                logger.error(f"Failed to create AP connection: {create_result.stderr}")
+                return False
                 
-                hotspot_command = [
-                    "nmcli", "device", "wifi", "hotspot", 
-                    "ifname", "wlan0", 
-                    "ssid", self.config["ap_ssid"]
-                ]
-                
-                # Add password only if ap_open is False
-                if not self.config["ap_open"]:
-                    hotspot_command.extend(["password", self.config["ap_password"]])
-                
-                create_result = subprocess.run(hotspot_command, capture_output=True, text=True, check=False)
-                
-                if create_result.returncode != 0:
-                    logger.error("Failed to create AP: %s", create_result.stderr)
-                    return False
-            else:
-                # Activate existing AP connection
-                activate_result = subprocess.run([
-                    "nmcli", "connection", "up", self.config["ap_ssid"]
-                ], capture_output=True, text=True, check=False)
-                
-                if activate_result.returncode != 0:
-                    logger.error("Failed to activate AP: %s", activate_result.stderr)
-                    return False
+            # Activate the connection
+            activate_result = subprocess.run(
+                ["nmcli", "connection", "up", "Hotspot"],
+                capture_output=True, text=True, check=False
+            )
+            
+            if activate_result.returncode != 0:
+                logger.error(f"Failed to activate AP connection: {activate_result.stderr}")
+                return False
             
             # Set AP IP address
             ip_result = subprocess.run([
@@ -294,14 +287,14 @@ class WiPi:
             ], capture_output=True, text=True, check=False)
             
             if ip_result.returncode != 0 and "File exists" not in ip_result.stderr:
-                logger.warning("Failed to set AP IP address: %s", ip_result.stderr)
+                logger.warning(f"Failed to set AP IP address: {ip_result.stderr}")
             
             self.ap_active = True
-            logger.info("Access point activated: %s", self.config["ap_ssid"])
+            logger.info(f"Access point activated: {self.config['ap_ssid']}")
             return True
             
         except Exception as e:
-            logger.error("Error activating AP: %s", e)
+            logger.error(f"Error activating AP: {e}")
             return False
 
     def deactivate_ap(self):
@@ -315,7 +308,7 @@ class WiPi:
             
             # Down the AP connection
             result = subprocess.run([
-                "nmcli", "connection", "down", self.config["ap_ssid"]
+                "nmcli", "connection", "down", "Hotspot"
             ], capture_output=True, text=True, check=False)
             
             if result.returncode != 0:
@@ -376,7 +369,8 @@ class WiPi:
 
     def run(self):
         """Main execution loop."""
-        logger.info("Starting WiPi service")
+        logger.info("Starting WiPi service with hardcoded configuration")
+        logger.info(f"Using SSID: {self.config['ap_ssid']}")
         
         while self.running:
             try:
@@ -388,10 +382,26 @@ class WiPi:
                 elif not self.is_connected_to_wifi():
                     logger.info("Not connected to WiFi, checking for known networks")
                     
+                    # Add a small delay to prevent NetworkManager's automatic hotspot
+                    time.sleep(2)
+                    
                     # Check if clients are connected to our AP before scanning for networks
                     if self.ap_active and self.config.get("prioritize_clients", True) and self.has_connected_clients():
                         logger.info("Clients are connected to the AP, staying in AP mode")
                     else:
+                        # Immediately check for and delete any automatic hotspots
+                        try:
+                            result = subprocess.run(
+                                ["nmcli", "-t", "-f", "NAME", "connection", "show"],
+                                capture_output=True, text=True, check=False
+                            )
+                            for conn in result.stdout.strip().split('\n'):
+                                if conn and (conn == "AccessPopup" or conn == "Hotspot"):
+                                    logger.info(f"Removing existing connection: {conn}")
+                                    subprocess.run(["nmcli", "connection", "delete", conn], check=False)
+                        except Exception as e:
+                            logger.warning(f"Error cleaning up existing connections: {e}")
+                            
                         available_networks = self.scan_for_known_networks()
                         
                         if available_networks:
@@ -400,6 +410,7 @@ class WiPi:
                         else:
                             # No known networks available, activate AP
                             logger.info("No known networks available, activating AP")
+                            logger.info(f"Using hardcoded SSID: {self.config['ap_ssid']} for AP mode")
                             self.activate_ap()
                 elif self.ap_active:
                     # Connected to WiFi but AP is active
@@ -433,7 +444,7 @@ class WiPi:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="WiPi - Auto WiFi Broadcasting")
-    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file")
+    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file (ignored)")
     parser.add_argument("-f", "--force-ap", action="store_true", help="Force AP mode")
     parser.add_argument("-s", "--status", action="store_true", help="Display status and exit")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
@@ -441,8 +452,8 @@ def main():
     parser.add_argument("-p", "--prioritize-clients", action="store_true", help="Prioritize client connections over WiFi connectivity")
     args = parser.parse_args()
     
-    # Initialize WiPi
-    wipi = WiPi(config_path=args.config)
+    # Initialize WiPi (with hardcoded config)
+    wipi = WiPi()
     
     # Override config with command line arguments
     if args.force_ap:
@@ -455,7 +466,6 @@ def main():
         wipi.config["ap_password"] = "" # Setting password to empty if open mode enabled
     if args.prioritize_clients:
         wipi.config["prioritize_clients"] = True
-    
     
     # Just display status if requested
     if args.status:

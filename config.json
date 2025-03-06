@@ -12,6 +12,6 @@
     "reconnect_delay": 10,
     "preferred_networks": [],
     "prioritize_clients": true,
-    "ap_open": true
+    "ap_open": false
 }
 
