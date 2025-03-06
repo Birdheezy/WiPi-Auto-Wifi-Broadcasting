@@ -30,13 +30,14 @@ logger = logging.getLogger('wipi')
 
 # Default configuration
 DEFAULT_CONFIG = {
-    "ap_ssid": "WiPi-AP",
-    "ap_password": "raspberry",  # Default password, will be ignored if ap_open is True
-    "ap_ip_address": "192.168.4.1",
+    "ap_ssid": "METAR-Pi",
+    "ap_password": "METAR-Pi",  # Default password, will be ignored if ap_open is True
+    "ap_ip_address": "192.168.8.1",
     "check_interval": 120,  # seconds
     "force_ap_mode": False,
     "debug_mode": False,
-    "ap_open": True  # New option: create open (no password) access point
+    "ap_open": True,  # New option: create open (no password) access point
+    "prioritize_clients": True  # New option: don't disconnect clients if they're connected
 }
 
 class WiPi:
@@ -118,6 +119,65 @@ class WiPi:
             return False
         except Exception as e:
             logger.exception(f"Unexpected error checking WiFi connection: {e}")
+            return False
+
+    def has_connected_clients(self):
+        """Check if there are clients connected to the access point."""
+        if not self.ap_active:
+            return False
+            
+        try:
+            # Method 1: Check using NetworkManager connection info
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "DEVICE,STATE,CONNECTION", "device", "status"],
+                capture_output=True, text=True, check=False
+            )
+            
+            # Check if wlan0 is in AP mode
+            ap_mode = False
+            for line in result.stdout.strip().split('\n'):
+                if 'wlan0:' in line and self.config["ap_ssid"] in line:
+                    ap_mode = True
+                    break
+                    
+            if not ap_mode:
+                return False
+                
+            # Method 2: Check ARP table for clients
+            arp_result = subprocess.run(
+                ["arp", "-n"],
+                capture_output=True, text=True, check=False
+            )
+            
+            # Parse ARP table to find clients on the AP's subnet
+            ap_ip_prefix = '.'.join(self.config["ap_ip_address"].split('.')[:3])
+            client_count = 0
+            
+            for line in arp_result.stdout.strip().split('\n')[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 3:
+                    ip = parts[0]
+                    if ip.startswith(ap_ip_prefix) and ip != self.config["ap_ip_address"]:
+                        client_count += 1
+                        logger.debug(f"Found client with IP: {ip}")
+            
+            # Method 3: As a fallback, check if there are any DHCP leases
+            # This assumes the standard location for dnsmasq leases file
+            leases_file = "/var/lib/misc/dnsmasq.leases"
+            if os.path.exists(leases_file):
+                with open(leases_file, 'r') as f:
+                    leases = f.readlines()
+                    for lease in leases:
+                        if ap_ip_prefix in lease:
+                            client_count += 1
+                            logger.debug(f"Found DHCP lease: {lease.strip()}")
+            
+            logger.debug(f"Detected {client_count} connected clients")
+            return client_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error checking for connected clients: {e}")
+            # If we can't determine, assume no clients to be safe
             return False
 
     def get_known_networks(self):
@@ -307,7 +367,8 @@ class WiPi:
             "ap_ssid": self.config["ap_ssid"],
             "ap_ip": self.config["ap_ip_address"],
             "wifi_connected": self.is_connected_to_wifi(),
-            "known_networks": self.get_known_networks()
+            "known_networks": self.get_known_networks(),
+            "clients_connected": self.has_connected_clients() if self.ap_active else False
         }
         
         logger.info("Status: %s", status)
@@ -326,19 +387,28 @@ class WiPi:
                 # Otherwise check connectivity and switch modes as needed
                 elif not self.is_connected_to_wifi():
                     logger.info("Not connected to WiFi, checking for known networks")
-                    available_networks = self.scan_for_known_networks()
                     
-                    if available_networks:
-                        # Try to connect to the first available known network
-                        self.connect_to_wifi(available_networks[0])
+                    # Check if clients are connected to our AP before scanning for networks
+                    if self.ap_active and self.config.get("prioritize_clients", True) and self.has_connected_clients():
+                        logger.info("Clients are connected to the AP, staying in AP mode")
                     else:
-                        # No known networks available, activate AP
-                        logger.info("No known networks available, activating AP")
-                        self.activate_ap()
+                        available_networks = self.scan_for_known_networks()
+                        
+                        if available_networks:
+                            # Try to connect to the first available known network
+                            self.connect_to_wifi(available_networks[0])
+                        else:
+                            # No known networks available, activate AP
+                            logger.info("No known networks available, activating AP")
+                            self.activate_ap()
                 elif self.ap_active:
-                    # Connected to WiFi but AP is active, deactivate AP
-                    logger.info("Connected to WiFi, deactivating AP")
-                    self.deactivate_ap()
+                    # Connected to WiFi but AP is active
+                    if self.config.get("prioritize_clients", True) and self.has_connected_clients():
+                        logger.info("Connected to WiFi but clients are using the AP, maintaining AP mode")
+                    else:
+                        # No clients connected, safe to deactivate AP
+                        logger.info("Connected to WiFi, deactivating AP")
+                        self.deactivate_ap()
                 else:
                     # Already connected to WiFi and AP is inactive
                     logger.debug("Connected to WiFi, no action needed")
@@ -368,6 +438,7 @@ def main():
     parser.add_argument("-s", "--status", action="store_true", help="Display status and exit")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("-o", "--open-ap", action="store_true", help="Create an open (no password) access point")
+    parser.add_argument("-p", "--prioritize-clients", action="store_true", help="Prioritize client connections over WiFi connectivity")
     args = parser.parse_args()
     
     # Initialize WiPi
@@ -382,6 +453,8 @@ def main():
     if args.open_ap:
         wipi.config["ap_open"] = True
         wipi.config["ap_password"] = "" # Setting password to empty if open mode enabled
+    if args.prioritize_clients:
+        wipi.config["prioritize_clients"] = True
     
     
     # Just display status if requested

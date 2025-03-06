@@ -4,9 +4,9 @@ A lightweight, reliable solution for automatically creating a WiFi access point 
 
 ## Overview
 
-WiPi solves a common problem with Raspberry Pi projects: how to access your Pi when it's not connected to your home WiFi network. This can happen when:
+WiPi solves a common problem with Raspberry Pi projects: how to access your Pi when it's not connected to a known WiFi network. This can happen when:
 
-- You take your Pi to a new location without known WiFi
+- You take your Pi to a new location without a known WiFi network
 - Your home WiFi network changes or is temporarily unavailable
 - You're developing a portable project that needs to work anywhere
 
@@ -30,7 +30,42 @@ WiPi monitors your WiFi connection and automatically switches to Access Point mo
 
 ## Installation
 
-### Quick Install
+### Quick Install with Virtual Environment (Recommended)
+
+On newer Raspberry Pi OS versions (Bookworm and later), system-wide pip installations are restricted. It's recommended to use a virtual environment:
+
+1. Download the installation files:
+   ```bash
+   git clone https://github.com/Birdheezy/WiPi-Auto-Wifi-Broadcasting.git
+   cd WiPi-Auto-Wifi-Broadcasting
+   ```
+
+2. If you already have a virtual environment:
+   ```bash
+   # Specify your virtual environment path with the --venv flag
+   sudo bash install.sh --venv /path/to/your-venv
+   
+   # For example, if your venv is at /home/pi/metar:
+   sudo bash install.sh --venv /home/pi/metar
+   ```
+
+3. If you don't have a virtual environment yet:
+   ```bash
+   # Create a virtual environment
+   python3 -m venv ~/wipi-venv
+   
+   # Activate it
+   source ~/wipi-venv/bin/activate
+   
+   # Install with the virtual environment
+   sudo bash install.sh --venv ~/wipi-venv
+   ```
+
+4. Follow the prompts to configure your access point settings.
+
+### Standard Installation (Legacy OS Versions)
+
+For older Raspberry Pi OS versions without pip restrictions:
 
 1. Download the installation files:
    ```bash
@@ -141,7 +176,8 @@ The configuration file is located at `/etc/wipi/config.json`. You can edit it di
     "ap_hidden": false,              // Whether to hide the SSID
     "reconnect_attempts": 3,         // Number of reconnection attempts
     "reconnect_delay": 5,            // Delay between reconnection attempts (seconds)
-    "preferred_networks": []         // List of preferred networks to connect to
+    "preferred_networks": [],        // List of preferred networks to connect to
+    "prioritize_clients": true       // Don't disconnect clients when a known network is found
 }
 ```
 
@@ -158,6 +194,38 @@ sudo bash install.sh --uninstall
 ```
 
 ## Troubleshooting
+
+### Installation Issues
+
+If you encounter errors about "externally-managed-environment" during installation:
+```
+error: externally-managed-environment
+× This environment is externally managed
+```
+
+This is due to restrictions in newer Raspberry Pi OS versions. Use the virtual environment installation method:
+```bash
+sudo bash install.sh --venv /path/to/your/venv
+```
+
+### Line Ending Issues
+
+If you encounter errors like these when running the installation script:
+```
+install.sh: line 6: $'\r': command not found
+install.sh: line 18: syntax error near unexpected token `$'{\r''
+```
+
+This is due to Windows-style line endings (CRLF) in the script. CD to the directory containing install.sh and run:
+```bash
+# Fix line endings in the installation script
+sed -i 's/\r$//' install.sh
+
+# Then run the installer
+sudo bash install.sh --venv /path/to/your/venv
+```
+
+This commonly happens when files are edited on Windows or copied from Windows systems to the Raspberry Pi.
 
 ### Service Won't Start
 

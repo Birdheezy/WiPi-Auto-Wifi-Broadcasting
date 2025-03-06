@@ -181,7 +181,7 @@ def run_daemon(config_path):
 def main():
     """Main entry point for the service wrapper."""
     parser = argparse.ArgumentParser(description="WiPi Service Wrapper")
-    parser.add_argument("-c", "--config", default="/etc/wipi/config.json", help="Path to configuration file")
+    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file")
     parser.add_argument("-d", "--daemon", action="store_true", help="Run as a daemon")
     parser.add_argument("--install", action="store_true", help="Install as a systemd service")
     parser.add_argument("--uninstall", action="store_true", help="Uninstall the systemd service")
