@@ -41,7 +41,7 @@ DEFAULT_CONFIG = {
 }
 
 class WiPi:
-    def __init__(self, config_path="/etc/wipi/config.json"):
+    def __init__(self, config_path="/home/pi/wipi/config.json"):
         """Initialize WiPi with configuration."""
         self.config_path = config_path
         self.config = self._load_config()
@@ -433,7 +433,7 @@ class WiPi:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="WiPi - Auto WiFi Broadcasting")
-    parser.add_argument("-c", "--config", default="/etc/wipi/config.json", help="Path to configuration file")
+    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file")
     parser.add_argument("-f", "--force-ap", action="store_true", help="Force AP mode")
     parser.add_argument("-s", "--status", action="store_true", help="Display status and exit")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")

@@ -219,9 +219,6 @@ install_python_packages() {
 install_wipi_files() {
     print_status "Installing WiPi files..."
     
-    # Create directory structure
-    mkdir -p /etc/wipi
-    
     # Get the directory of the install script
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
     
@@ -236,14 +233,6 @@ install_wipi_files() {
     # Create symlinks
     ln -sf /usr/local/bin/wipi.py /usr/local/bin/wipi
     ln -sf /usr/local/bin/wipi_service.py /usr/local/bin/wipi-service
-    
-    # Copy config file if it doesn't exist
-    if [ ! -f /etc/wipi/config.json ]; then
-        cp "$SCRIPT_DIR/config.json" /etc/wipi/config.json
-    else
-        print_warning "Config file already exists at /etc/wipi/config.json"
-        print_warning "Your existing configuration will not be modified"
-    fi
     
     print_success "WiPi files installed successfully"
 }
@@ -382,7 +371,7 @@ alias wipi-enable='sudo systemctl enable wipi.service'
 alias wipi-disable='sudo systemctl disable wipi.service'
 alias wipi-log='sudo journalctl -u wipi.service'
 alias wipi-config='sudo nano /home/pi/wipi/config.json'
-alias wipi='sudo $VENV_PATH/bin/python3 /home/pi/wipi/wipi.py'
+alias wipi='sudo $VENV_PATH/bin/python3 /home/pi/wipi/wipi.py --config /home/pi/wipi/config.json'
 alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service /etc/profile.d/wipi-aliases.sh && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
 EOF
     else
@@ -396,7 +385,7 @@ alias wipi-enable='sudo systemctl enable wipi.service'
 alias wipi-disable='sudo systemctl disable wipi.service'
 alias wipi-log='sudo journalctl -u wipi.service'
 alias wipi-config='sudo nano /home/pi/wipi/config.json'
-alias wipi='sudo /usr/bin/python3 /home/pi/wipi/wipi.py'
+alias wipi='sudo /usr/bin/python3 /home/pi/wipi/wipi.py --config /home/pi/wipi/config.json'
 alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service /etc/profile.d/wipi-aliases.sh && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
 EOF
     fi
@@ -630,6 +619,13 @@ main() {
     
     # Always run the configuration step
     configure_wipi
+    
+    # Remove the old config file to avoid dual SSIDs
+    if [ -f /etc/wipi/config.json ]; then
+        print_status "Removing old configuration file at /etc/wipi/config.json"
+        rm -f /etc/wipi/config.json
+        print_success "Old configuration file removed"
+    fi
     
     # Install systemd service
     install_service
