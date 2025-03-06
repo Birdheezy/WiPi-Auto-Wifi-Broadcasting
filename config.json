@@ -1,14 +1,16 @@
 {
     "ap_ssid": "METAR-Pi",
-    "ap_password": "METAR-Pi",
+    "ap_password": "",
     "ap_ip_address": "192.168.8.1",
-    "check_interval": 120,
+    "check_interval": 60,
     "force_ap_mode": false,
-    "debug_mode": false,
-    "ap_channel": 6,
+    "debug_mode": true,
+    "ap_channel": 1,
     "ap_band": "bg",
     "ap_hidden": false,
     "reconnect_attempts": 3,
     "reconnect_delay": 5,
-    "preferred_networks": []
+    "preferred_networks": [],
+    "ap_open": true
 }
+

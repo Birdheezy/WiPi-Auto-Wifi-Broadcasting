@@ -14,6 +14,8 @@ import subprocess
 import signal
 import socket
 from datetime import datetime
+import re
+import subprocess
 
 # Configure logging
 logging.basicConfig(
@@ -29,11 +31,12 @@ logger = logging.getLogger('wipi')
 # Default configuration
 DEFAULT_CONFIG = {
     "ap_ssid": "WiPi-AP",
-    "ap_password": "raspberry",
+    "ap_password": "raspberry",  # Default password, will be ignored if ap_open is True
     "ap_ip_address": "192.168.4.1",
     "check_interval": 120,  # seconds
     "force_ap_mode": False,
-    "debug_mode": False
+    "debug_mode": False,
+    "ap_open": True  # New option: create open (no password) access point
 }
 
 class WiPi:
@@ -90,44 +93,47 @@ class WiPi:
             logger.error("Error saving configuration: %s", e)
 
     def is_connected_to_wifi(self):
-        """Check if connected to a known WiFi network."""
+        """Check if connected to a WiFi network."""
         try:
-            # Check if wlan0 has an IP address
+            # Find the wireless interface
+            interfaces = subprocess.check_output(["ip", "link"]).decode()
+            match = re.search(r"wlan[0-9]+: <BROADCAST,MULTICAST,UP,LOWER_UP>\s*.*", interfaces)
+            if not match:
+                return False  # No wireless interface found
+            interface = match.group(0).split(":")[0]
+
             result = subprocess.run(
-                ["ip", "-4", "addr", "show", "wlan0"],
-                capture_output=True, text=True, check=False
+                ["ip", "-4", "addr", "show", interface],
+                capture_output=True, text=True, check=True
             )
             
-            if "inet" in result.stdout:
-                # Check if we're in client mode (not AP mode)
-                mode_result = subprocess.run(
-                    ["iwconfig", "wlan0"], 
-                    capture_output=True, text=True, check=False
-                )
-                if "Mode:Master" not in mode_result.stdout:
-                    logger.debug("Connected to WiFi in client mode")
-                    return True
+            # Check if there is an ip address, if there is it should be connected
+            if "inet " in result.stdout:
+                return True
+            else:
+                return False
             
-            logger.debug("Not connected to WiFi in client mode")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error checking WiFi connection: {e}")
             return False
         except Exception as e:
-            logger.error("Error checking WiFi connection: %s", e)
+            logger.exception(f"Unexpected error checking WiFi connection: {e}")
             return False
 
     def get_known_networks(self):
-        """Get list of known WiFi networks."""
+        """Get the list of known WiFi networks."""
         try:
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "NAME", "connection", "show"],
                 capture_output=True, text=True, check=False
             )
             networks = [line for line in result.stdout.strip().split('\n') if line]
-            logger.debug("Found known networks: %s", networks)
+            logger.debug("Known networks: %s", networks)
             return networks
         except Exception as e:
             logger.error("Error getting known networks: %s", e)
             return []
-
+        
     def scan_for_known_networks(self):
         """Scan for available known WiFi networks."""
         try:
@@ -194,12 +200,18 @@ class WiPi:
             if not ap_exists:
                 # Create AP connection
                 logger.info("Creating AP connection: %s", self.config["ap_ssid"])
-                create_result = subprocess.run([
+                
+                hotspot_command = [
                     "nmcli", "device", "wifi", "hotspot", 
                     "ifname", "wlan0", 
-                    "ssid", self.config["ap_ssid"], 
-                    "password", self.config["ap_password"]
-                ], capture_output=True, text=True, check=False)
+                    "ssid", self.config["ap_ssid"]
+                ]
+                
+                # Add password only if ap_open is False
+                if not self.config["ap_open"]:
+                    hotspot_command.extend(["password", self.config["ap_password"]])
+                
+                create_result = subprocess.run(hotspot_command, capture_output=True, text=True, check=False)
                 
                 if create_result.returncode != 0:
                     logger.error("Failed to create AP: %s", create_result.stderr)
@@ -355,6 +367,7 @@ def main():
     parser.add_argument("-f", "--force-ap", action="store_true", help="Force AP mode")
     parser.add_argument("-s", "--status", action="store_true", help="Display status and exit")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("-o", "--open-ap", action="store_true", help="Create an open (no password) access point")
     args = parser.parse_args()
     
     # Initialize WiPi
@@ -366,6 +379,10 @@ def main():
     if args.debug:
         wipi.config["debug_mode"] = True
         logger.setLevel(logging.DEBUG)
+    if args.open_ap:
+        wipi.config["ap_open"] = True
+        wipi.config["ap_password"] = "" # Setting password to empty if open mode enabled
+    
     
     # Just display status if requested
     if args.status:
