@@ -6,7 +6,6 @@ A utility to automatically create a WiFi access point when not connected to a kn
 
 import os
 import sys
-import json
 import time
 import logging
 import argparse
@@ -15,7 +14,6 @@ import signal
 import socket
 from datetime import datetime
 import re
-import subprocess
 
 # Configure logging
 logging.basicConfig(
@@ -28,37 +26,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger('wipi')
 
-# Default configuration
-DEFAULT_CONFIG = {
-    "ap_ssid": "METAR-Pi",  # Hardcoded to user's desired SSID
-    "ap_password": "METAR-Pi",  # Hardcoded password
-    "ap_ip_address": "192.168.8.1",  # User's desired IP
-    "check_interval": 300,  # seconds
-    "force_ap_mode": False,
-    "debug_mode": False,  # Enable debug mode by default
-    "ap_channel": 6,
-    "ap_band": "bg",
-    "ap_hidden": False,
-    "reconnect_attempts": 3,
-    "reconnect_delay": 5,
-    "preferred_networks": [],
-    "prioritize_clients": True,
-    "ap_open": False
-}
+# Hardcoded settings (these will be modified by the installer/settings editor)
+AP_SSID = "METAR-Pi"
+AP_PASSWORD = "METAR-Pi"
+AP_IP_ADDRESS = "192.168.8.1"
+CHECK_INTERVAL = 120
+FORCE_AP_MODE = False
+DEBUG_MODE = False
+AP_CHANNEL = 6
+AP_BAND = "bg"
+AP_HIDDEN = False
+RECONNECT_ATTEMPTS = 3
+RECONNECT_DELAY = 5
+PRIORITIZE_CLIENTS = True
+AP_OPEN = False
 
 class WiPi:
-    def __init__(self, config_path="/home/pi/wipi/config.json"):
-        """Initialize WiPi with configuration."""
-        # Simplified: just use the hardcoded DEFAULT_CONFIG
-        self.config = DEFAULT_CONFIG.copy()
+    def __init__(self):
+        """Initialize WiPi with hardcoded settings."""
         self.running = True
         self.ap_active = False
         
         # Set debug mode if configured
-        if self.config.get("debug_mode", False):
+        if DEBUG_MODE:
             logger.setLevel(logging.DEBUG)
             
-        logger.info("WiPi initialized with hardcoded configuration: %s", self.config)
+        logger.info("WiPi initialized with settings: SSID=%s, IP=%s", AP_SSID, AP_IP_ADDRESS)
         
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -112,7 +105,7 @@ class WiPi:
             # Check if wlan0 is in AP mode
             ap_mode = False
             for line in result.stdout.strip().split('\n'):
-                if 'wlan0:' in line and self.config["ap_ssid"] in line:
+                if 'wlan0:' in line and AP_SSID in line:
                     ap_mode = True
                     break
                     
@@ -126,14 +119,14 @@ class WiPi:
             )
             
             # Parse ARP table to find clients on the AP's subnet
-            ap_ip_prefix = '.'.join(self.config["ap_ip_address"].split('.')[:3])
+            ap_ip_prefix = '.'.join(AP_IP_ADDRESS.split('.')[:3])
             client_count = 0
             
             for line in arp_result.stdout.strip().split('\n')[1:]:  # Skip header
                 parts = line.split()
                 if len(parts) >= 3:
                     ip = parts[0]
-                    if ip.startswith(ap_ip_prefix) and ip != self.config["ap_ip_address"]:
+                    if ip.startswith(ap_ip_prefix) and ip != AP_IP_ADDRESS:
                         client_count += 1
                         logger.debug(f"Found client with IP: {ip}")
             
@@ -176,23 +169,53 @@ class WiPi:
             # Get list of known networks
             known_networks = self.get_known_networks()
             
-            # Scan for available networks
-            subprocess.run(["nmcli", "device", "wifi", "rescan"], check=False)
-            time.sleep(2)  # Give time for scan to complete
+            # Force a rescan by turning WiFi off and on
+            logger.debug("Forcing WiFi rescan...")
+            try:
+                subprocess.run(["nmcli", "radio", "wifi", "off"], check=False)
+                time.sleep(1)
+                subprocess.run(["nmcli", "radio", "wifi", "on"], check=False)
+                time.sleep(2)  # Give time for interface to come up
+            except Exception as e:
+                logger.warning(f"Error cycling WiFi: {e}")
             
-            result = subprocess.run(
-                ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list"],
-                capture_output=True, text=True, check=False
-            )
-            available_networks = [line for line in result.stdout.strip().split('\n') if line]
+            # Request a scan
+            try:
+                subprocess.run(["nmcli", "device", "wifi", "rescan"], check=False)
+            except Exception as e:
+                logger.warning(f"Error initiating rescan: {e}")
             
-            # Find intersection of known and available networks
-            available_known = [net for net in known_networks if net in available_networks]
-            logger.debug("Available known networks: %s", available_known)
+            # Give more time for scan to complete
+            time.sleep(5)
             
-            return available_known
+            # Try multiple times to get scan results
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    result = subprocess.run(
+                        ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list"],
+                        capture_output=True, text=True, check=False
+                    )
+                    available_networks = [line for line in result.stdout.strip().split('\n') if line]
+                    
+                    if available_networks:
+                        # Find intersection of known and available networks
+                        available_known = [net for net in known_networks if net in available_networks]
+                        logger.debug(f"Available known networks (attempt {attempt + 1}): {available_known}")
+                        
+                        if available_known:
+                            return available_known
+                except Exception as e:
+                    logger.warning(f"Error getting scan results (attempt {attempt + 1}): {e}")
+                
+                if attempt < max_attempts - 1:
+                    time.sleep(2)  # Wait before next attempt
+            
+            logger.warning("No known networks found after multiple attempts")
+            return []
+            
         except Exception as e:
-            logger.error("Error scanning for networks: %s", e)
+            logger.error(f"Error scanning for networks: {e}")
             return []
 
     def connect_to_wifi(self, network_name):
@@ -237,14 +260,14 @@ class WiPi:
                 
                 # Look for connections that might be related to our AP
                 for conn in result.stdout.strip().split('\n'):
-                    if conn and (conn.startswith("METAR-Pi") or conn == "Hotspot" or conn == "AccessPopup"):
+                    if conn and (conn == "AccessPopup" or conn == "Hotspot"):
                         logger.info(f"Removing existing connection: {conn}")
                         subprocess.run(["nmcli", "connection", "delete", conn], check=False)
             except Exception as e:
                 logger.warning(f"Error cleaning up existing connections: {e}")
             
             # Create AP connection with explicit name "Hotspot"
-            logger.info(f"Creating AP connection: {self.config['ap_ssid']} (named 'Hotspot')")
+            logger.info(f"Creating AP connection: {AP_SSID} (named 'Hotspot')")
             
             hotspot_command = [
                 "nmcli", "connection", "add",
@@ -252,15 +275,15 @@ class WiPi:
                 "ifname", "wlan0",
                 "con-name", "Hotspot",
                 "autoconnect", "no",
-                "ssid", self.config["ap_ssid"],
+                "ssid", AP_SSID,
                 "mode", "ap"
             ]
             
             # Add security settings if ap_open is False
-            if not self.config.get("ap_open", False):
+            if not AP_OPEN:
                 hotspot_command.extend([
                     "wifi-sec.key-mgmt", "wpa-psk",
-                    "wifi-sec.psk", self.config["ap_password"]
+                    "wifi-sec.psk", AP_PASSWORD
                 ])
             
             create_result = subprocess.run(hotspot_command, capture_output=True, text=True, check=False)
@@ -282,7 +305,7 @@ class WiPi:
             # Set AP IP address
             ip_result = subprocess.run([
                 "sudo", "ip", "addr", "add", 
-                f"{self.config['ap_ip_address']}/24", 
+                f"{AP_IP_ADDRESS}/24", 
                 "dev", "wlan0"
             ], capture_output=True, text=True, check=False)
             
@@ -290,7 +313,7 @@ class WiPi:
                 logger.warning(f"Failed to set AP IP address: {ip_result.stderr}")
             
             self.ap_active = True
-            logger.info(f"Access point activated: {self.config['ap_ssid']}")
+            logger.info(f"Access point activated: {AP_SSID}")
             return True
             
         except Exception as e:
@@ -357,8 +380,8 @@ class WiPi:
             "hostname": self.get_hostname(),
             "ip_addresses": self.get_ip_addresses(),
             "ap_active": self.ap_active,
-            "ap_ssid": self.config["ap_ssid"],
-            "ap_ip": self.config["ap_ip_address"],
+            "ap_ssid": AP_SSID,
+            "ap_ip": AP_IP_ADDRESS,
             "wifi_connected": self.is_connected_to_wifi(),
             "known_networks": self.get_known_networks(),
             "clients_connected": self.has_connected_clients() if self.ap_active else False
@@ -369,56 +392,65 @@ class WiPi:
 
     def run(self):
         """Main execution loop."""
-        logger.info("Starting WiPi service with hardcoded configuration")
-        logger.info(f"Using SSID: {self.config['ap_ssid']}")
+        logger.info("Starting WiPi service")
+        logger.info(f"Using SSID: {AP_SSID}")
         
         while self.running:
             try:
                 # Check if we should force AP mode
-                if self.config.get("force_ap_mode", False):
+                if FORCE_AP_MODE:
                     logger.info("Forcing AP mode as configured")
-                    self.activate_ap()
+                    if not self.ap_active:
+                        self.activate_ap()
+                # Check if AP is active and has no clients
+                elif self.ap_active and not self.has_connected_clients():
+                    logger.info("AP is active but no clients connected, scanning for known networks")
+                    available_networks = self.scan_for_known_networks()
+                    
+                    if available_networks:
+                        # Try to connect to the first available known network
+                        if self.connect_to_wifi(available_networks[0]):
+                            logger.info("Successfully connected to known network")
+                            self.deactivate_ap()
+                        else:
+                            logger.info("Failed to connect to known network, maintaining AP mode")
+                    else:
+                        logger.info("No known networks found, maintaining AP mode")
                 # Otherwise check connectivity and switch modes as needed
                 elif not self.is_connected_to_wifi():
                     logger.info("Not connected to WiFi, checking for known networks")
                     
-                    # Add a small delay to prevent NetworkManager's automatic hotspot
-                    time.sleep(2)
+                    # Check if clients are connected to our AP
+                    if self.ap_active and self.has_connected_clients():
+                        logger.info("Clients are connected to the AP, maintaining AP mode")
+                        # Skip network scanning to avoid disrupting clients
+                        time.sleep(CHECK_INTERVAL)
+                        continue
                     
-                    # Check if clients are connected to our AP before scanning for networks
-                    if self.ap_active and self.config.get("prioritize_clients", True) and self.has_connected_clients():
-                        logger.info("Clients are connected to the AP, staying in AP mode")
-                    else:
-                        # Immediately check for and delete any automatic hotspots
-                        try:
-                            result = subprocess.run(
-                                ["nmcli", "-t", "-f", "NAME", "connection", "show"],
-                                capture_output=True, text=True, check=False
-                            )
-                            for conn in result.stdout.strip().split('\n'):
-                                if conn and (conn == "AccessPopup" or conn == "Hotspot"):
-                                    logger.info(f"Removing existing connection: {conn}")
-                                    subprocess.run(["nmcli", "connection", "delete", conn], check=False)
-                        except Exception as e:
-                            logger.warning(f"Error cleaning up existing connections: {e}")
-                            
-                        available_networks = self.scan_for_known_networks()
-                        
-                        if available_networks:
-                            # Try to connect to the first available known network
-                            self.connect_to_wifi(available_networks[0])
-                        else:
-                            # No known networks available, activate AP
-                            logger.info("No known networks available, activating AP")
-                            logger.info(f"Using hardcoded SSID: {self.config['ap_ssid']} for AP mode")
+                    # If AP is not active or no clients are connected, scan for networks
+                    available_networks = self.scan_for_known_networks()
+                    
+                    if not available_networks:
+                        logger.info("No known networks available, activating/maintaining AP mode")
+                        if not self.ap_active:
                             self.activate_ap()
+                    else:
+                        # Try to connect to the first available known network
+                        if self.connect_to_wifi(available_networks[0]):
+                            if self.ap_active:
+                                self.deactivate_ap()
+                        else:
+                            # Connection failed, ensure AP is active
+                            logger.info("Failed to connect to known network, activating/maintaining AP mode")
+                            if not self.ap_active:
+                                self.activate_ap()
                 elif self.ap_active:
                     # Connected to WiFi but AP is active
-                    if self.config.get("prioritize_clients", True) and self.has_connected_clients():
+                    if self.has_connected_clients():
                         logger.info("Connected to WiFi but clients are using the AP, maintaining AP mode")
                     else:
                         # No clients connected, safe to deactivate AP
-                        logger.info("Connected to WiFi, deactivating AP")
+                        logger.info("Connected to WiFi and no clients on AP, deactivating AP")
                         self.deactivate_ap()
                 else:
                     # Already connected to WiFi and AP is inactive
@@ -428,15 +460,19 @@ class WiPi:
                 self.display_status()
                 
                 # Sleep for the configured interval
-                logger.debug("Sleeping for %s seconds", self.config["check_interval"])
-                for _ in range(int(self.config["check_interval"])):
+                logger.debug("Sleeping for %s seconds", CHECK_INTERVAL)
+                for _ in range(int(CHECK_INTERVAL)):
                     if not self.running:
                         break
                     time.sleep(1)
                     
             except Exception as e:
                 logger.error("Error in main loop: %s", e)
-                time.sleep(10)  # Sleep briefly before retrying
+                # If we hit an error, make sure AP is active as a fallback
+                if not self.ap_active:
+                    logger.info("Error occurred, ensuring AP is active as fallback")
+                    self.activate_ap()
+                time.sleep(10)  # Brief sleep before retrying
 
         logger.info("WiPi service stopped")
 
@@ -444,7 +480,6 @@ class WiPi:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="WiPi - Auto WiFi Broadcasting")
-    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file (ignored)")
     parser.add_argument("-f", "--force-ap", action="store_true", help="Force AP mode")
     parser.add_argument("-s", "--status", action="store_true", help="Display status and exit")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
@@ -452,20 +487,21 @@ def main():
     parser.add_argument("-p", "--prioritize-clients", action="store_true", help="Prioritize client connections over WiFi connectivity")
     args = parser.parse_args()
     
-    # Initialize WiPi (with hardcoded config)
+    # Initialize WiPi
     wipi = WiPi()
     
-    # Override config with command line arguments
+    # Override settings with command line arguments
+    global FORCE_AP_MODE, DEBUG_MODE, AP_OPEN, PRIORITIZE_CLIENTS
+    
     if args.force_ap:
-        wipi.config["force_ap_mode"] = True
+        FORCE_AP_MODE = True
     if args.debug:
-        wipi.config["debug_mode"] = True
+        DEBUG_MODE = True
         logger.setLevel(logging.DEBUG)
     if args.open_ap:
-        wipi.config["ap_open"] = True
-        wipi.config["ap_password"] = "" # Setting password to empty if open mode enabled
+        AP_OPEN = True
     if args.prioritize_clients:
-        wipi.config["prioritize_clients"] = True
+        PRIORITIZE_CLIENTS = True
     
     # Just display status if requested
     if args.status:

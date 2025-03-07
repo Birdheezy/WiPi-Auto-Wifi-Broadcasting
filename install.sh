@@ -222,17 +222,23 @@ install_wipi_files() {
     # Get the directory of the install script
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
     
-    # Copy files
-    cp "$SCRIPT_DIR/wipi.py" /usr/local/bin/wipi.py
-    cp "$SCRIPT_DIR/wipi_service.py" /usr/local/bin/wipi_service.py
+    # Create wipi directory if it doesn't exist
+    mkdir -p /home/pi/wipi
+    
+    # Copy files to /home/pi/wipi
+    cp "$SCRIPT_DIR/wipi.py" /home/pi/wipi/wipi.py
+    cp "$SCRIPT_DIR/wipi_service.py" /home/pi/wipi/wipi_service.py
     
     # Make executable
-    chmod +x /usr/local/bin/wipi.py
-    chmod +x /usr/local/bin/wipi_service.py
+    chmod +x /home/pi/wipi/wipi.py
+    chmod +x /home/pi/wipi/wipi_service.py
     
-    # Create symlinks
-    ln -sf /usr/local/bin/wipi.py /usr/local/bin/wipi
-    ln -sf /usr/local/bin/wipi_service.py /usr/local/bin/wipi-service
+    # Set ownership
+    chown -R pi:pi /home/pi/wipi
+    
+    # Create symlinks in /usr/local/bin
+    ln -sf /home/pi/wipi/wipi.py /usr/local/bin/wipi
+    ln -sf /home/pi/wipi/wipi_service.py /usr/local/bin/wipi-service
     
     print_success "WiPi files installed successfully"
 }
@@ -249,9 +255,83 @@ configure_wipi() {
     read -p "$(echo -e "${CYAN}Enter the Access Point password [METAR-Pi]: ${NC}")" ap_password
     ap_password=${ap_password:-METAR-Pi}
     
-    # Ask for AP IP address
-    read -p "$(echo -e "${CYAN}Enter the Access Point IP address [192.168.8.1]: ${NC}")" ap_ip
-    ap_ip=${ap_ip:-192.168.8.1}
+    # IP Address Selection
+    echo ""
+    echo -e "Choose an IP scheme:"
+    echo -e "  ${BOLD}1${NC}. 192.168.x.x (common for home networks)"
+    echo -e "  ${BOLD}2${NC}. 10.10.x.x (alternative scheme)"
+    echo ""
+    
+    read -p "$(echo -e "${CYAN}Your choice [1]: ${NC}")" ip_scheme
+    ip_scheme=${ip_scheme:-1}
+    
+    case $ip_scheme in
+        1)
+            ip_prefix="192.168"
+            ;;
+        2)
+            ip_prefix="10.10"
+            ;;
+        *)
+            print_error "Invalid choice, using 192.168.x.x"
+            ip_prefix="192.168"
+            ;;
+    esac
+    
+    # Get third octet
+    while true; do
+        read -p "$(echo -e "${CYAN}Input the 3rd number set (0-255) [8]: ${NC}")" third_octet
+        third_octet=${third_octet:-8}
+        
+        if [[ "$third_octet" =~ ^[0-9]+$ ]] && [ "$third_octet" -ge 0 ] && [ "$third_octet" -le 255 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 0 and 255"
+        fi
+    done
+    
+    # Get fourth octet
+    while true; do
+        read -p "$(echo -e "${CYAN}Input the 4th number set (1-254) [1]: ${NC}")" fourth_octet
+        fourth_octet=${fourth_octet:-1}
+        
+        if [[ "$fourth_octet" =~ ^[0-9]+$ ]] && [ "$fourth_octet" -ge 1 ] && [ "$fourth_octet" -le 254 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 1 and 254"
+        fi
+    done
+    
+    # Construct the IP address
+    ap_ip="${ip_prefix}.${third_octet}.${fourth_octet}"
+    
+    # Get check interval
+    while true; do
+        read -p "$(echo -e "${CYAN}Enter check interval in seconds (30-3600) [120]: ${NC}")" check_interval
+        check_interval=${check_interval:-120}
+        
+        if [[ "$check_interval" =~ ^[0-9]+$ ]] && [ "$check_interval" -ge 30 ] && [ "$check_interval" -le 3600 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 30 and 3600 seconds"
+        fi
+    done
+    
+    # Display the settings for confirmation
+    echo ""
+    echo -e "Settings:"
+    echo -e "  SSID: ${YELLOW}${ap_ssid}${NC}"
+    echo -e "  Password: ${YELLOW}${ap_password}${NC}"
+    echo -e "  IP Address: ${YELLOW}${ap_ip}${NC}"
+    echo -e "  Check Interval: ${YELLOW}${check_interval}${NC} seconds"
+    echo ""
+    
+    # Confirm settings
+    read -p "$(echo -e "${CYAN}Apply these settings? [Y/n]: ${NC}")" confirm_settings
+    if [[ $confirm_settings =~ ^[Nn]$ ]]; then
+        print_warning "Configuration cancelled"
+        return 1
+    fi
     
     # Update config file
     cat > /home/pi/wipi/config.json << EOF
@@ -259,7 +339,7 @@ configure_wipi() {
     "ap_ssid": "$ap_ssid",
     "ap_password": "$ap_password",
     "ap_ip_address": "$ap_ip",
-    "check_interval": 120,
+    "check_interval": $check_interval,
     "force_ap_mode": false,
     "debug_mode": false,
     "ap_channel": 6,
@@ -274,6 +354,7 @@ configure_wipi() {
 EOF
     
     print_success "WiPi configured successfully"
+    return 0
 }
 
 # Function to install systemd service
@@ -359,10 +440,11 @@ create_aliases() {
         fi
     fi
     
-    # Create aliases file with or without virtual environment
+    # Create or append to .bash_aliases file
     if [ -n "$VENV_PATH" ]; then
         print_status "Configuring aliases to use virtual environment: $VENV_PATH"
-        cat > /etc/profile.d/wipi-aliases.sh << EOF
+        cat >> /home/pi/.bash_aliases << EOF
+
 # WiPi command aliases
 alias wipi-status='systemctl status wipi.service'
 alias wipi-start='sudo systemctl start wipi.service'
@@ -373,10 +455,11 @@ alias wipi-disable='sudo systemctl disable wipi.service'
 alias wipi-log='sudo journalctl -u wipi.service'
 alias wipi-config='sudo nano /home/pi/wipi/config.json'
 alias wipi='sudo $VENV_PATH/bin/python3 /home/pi/wipi/wipi.py --config /home/pi/wipi/config.json'
-alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service /etc/profile.d/wipi-aliases.sh && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
+alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
 EOF
     else
-        cat > /etc/profile.d/wipi-aliases.sh << EOF
+        cat >> /home/pi/.bash_aliases << EOF
+
 # WiPi command aliases
 alias wipi-status='systemctl status wipi.service'
 alias wipi-start='sudo systemctl start wipi.service'
@@ -387,16 +470,25 @@ alias wipi-disable='sudo systemctl disable wipi.service'
 alias wipi-log='sudo journalctl -u wipi.service'
 alias wipi-config='sudo nano /home/pi/wipi/config.json'
 alias wipi='sudo /usr/bin/python3 /home/pi/wipi/wipi.py --config /home/pi/wipi/config.json'
-alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service /etc/profile.d/wipi-aliases.sh && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
+alias wipi-uninstall='sudo systemctl stop wipi.service && sudo systemctl disable wipi.service && sudo rm -rf /home/pi/wipi /etc/systemd/system/wipi.service && echo -e "\033[0;32m✓ WiPi has been uninstalled\033[0m"'
 EOF
     fi
     
-    # Make executable
-    chmod +x /etc/profile.d/wipi-aliases.sh
+    # Set proper ownership
+    chown pi:pi /home/pi/.bash_aliases
+    chmod 644 /home/pi/.bash_aliases
     
-    print_success "Command aliases created"
-    print_status "Aliases will be available after next login or after running:"
-    print_status "source /etc/profile.d/wipi-aliases.sh"
+    # Reload aliases for the current user
+    if [ -n "$SUDO_USER" ]; then
+        # If running with sudo, reload for the actual user
+        sudo -u $SUDO_USER bash -c 'source /home/pi/.bash_aliases'
+    else
+        # Otherwise reload directly
+        source /home/pi/.bash_aliases
+    fi
+    
+    print_success "Command aliases created and loaded"
+    print_status "Aliases are now available for use"
 }
 
 # Function to display completion message
@@ -434,11 +526,12 @@ uninstall_wipi() {
     print_section_header "WiPi Uninstallation"
     
     # Confirm uninstallation
-    read -p "Are you sure you want to uninstall WiPi? [y/N] " -n 1 -r
+    read -p "$(echo -e "${CYAN}Are you sure you want to uninstall WiPi? [y/N]: ${NC}")" confirm
     echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    if [[ ! $confirm =~ ^[Yy]$ ]]; then
         print_warning "Uninstallation cancelled"
-        exit 0
+        display_main_menu
+        return 0
     fi
     
     print_status "Stopping and removing WiPi service..."
@@ -464,19 +557,13 @@ uninstall_wipi() {
     rm -f /usr/local/bin/wipi-service
     
     # Ask about configuration
-    read -p "Do you want to remove WiPi configuration files? [y/N] " -n 1 -r
+    read -p "$(echo -e "${CYAN}Do you want to keep WiPi configuration files? [y/N]: ${NC}")" keep_config
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf /etc/wipi
-        print_success "Configuration files removed"
+    if [[ ! $keep_config =~ ^[Yy]$ ]]; then
+        rm -rf /home/pi/wipi
+        print_success "WiPi directory and configuration files removed"
     else
-        print_warning "Configuration files preserved at /etc/wipi"
-    fi
-    
-    # Remove aliases
-    if [ -f /etc/profile.d/wipi-aliases.sh ]; then
-        rm -f /etc/profile.d/wipi-aliases.sh
-        print_success "Command aliases removed"
+        print_warning "Configuration files preserved in /home/pi/wipi"
     fi
     
     print_section_header "Uninstallation Complete"
@@ -485,31 +572,14 @@ uninstall_wipi() {
     echo -e "${YELLOW}Note:${NC} NetworkManager remains installed as it may be used by other applications."
     echo -e "If you want to remove it, you can run: ${BOLD}sudo apt remove network-manager${NC}"
     echo ""
+    
+    # Exit after uninstallation
+    exit 0
 }
 
-# Main installation function
-main() {
-    # Fix line endings if needed
-    if grep -q $'\r' "$0"; then
-        echo "Fixing line endings..."
-        sed -i 's/\r$//' "$0"
-        exec "$0" "$@"
-    fi
-    
-    # Check for uninstall flag
-    if [ "$1" == "--uninstall" ]; then
-        check_root
-        uninstall_wipi
-        exit 0
-    fi
-    
-    print_section_header "WiPi - Auto WiFi Broadcasting Installation"
-    
-    # Check if running as root
-    check_root
-    
-    # Check for NetworkManager
-    check_network_manager
+# Function to check for virtual environment
+check_venv() {
+    print_section_header "Virtual Environment Check"
     
     # Check if a virtual environment is active
     if [ -z "$VIRTUAL_ENV" ]; then
@@ -551,7 +621,8 @@ main() {
                 read -p "$(echo -e "${CYAN}Do you want to continue anyway (not recommended)? [y/N]: ${NC}")" CONTINUE_ANYWAY
                 if [[ ! $CONTINUE_ANYWAY =~ ^[Yy]$ ]]; then
                     print_warning "Installation aborted"
-                    exit 0
+                    display_main_menu
+                    return 1
                 fi
                 
                 print_warning "Continuing without a virtual environment (not recommended)"
@@ -567,7 +638,8 @@ main() {
                 read -p "$(echo -e "${CYAN}Do you want to continue anyway (not recommended)? [y/N]: ${NC}")" CONTINUE_ANYWAY
                 if [[ ! $CONTINUE_ANYWAY =~ ^[Yy]$ ]]; then
                     print_warning "Installation aborted"
-                    exit 0
+                    display_main_menu
+                    return 1
                 fi
                 
                 print_warning "Continuing without a detected virtual environment (not recommended)"
@@ -578,6 +650,238 @@ main() {
     else
         print_success "Using active virtual environment: $VIRTUAL_ENV"
     fi
+    return 0
+}
+
+# Function to display the main menu
+display_main_menu() {
+    print_section_header "WiPi - Auto WiFi Broadcasting"
+    
+    echo -e "Please select an option:"
+    echo -e "  ${BOLD}1${NC}. Install WiPi"
+    echo -e "  ${BOLD}2${NC}. Edit WiPi Settings"
+    echo -e "  ${BOLD}3${NC}. Uninstall WiPi"
+    echo -e "  ${BOLD}4${NC}. Exit"
+    echo ""
+    
+    read -p "$(echo -e "${CYAN}Your choice [1]: ${NC}")" menu_choice
+    menu_choice=${menu_choice:-1}
+    
+    case $menu_choice in
+        1)
+            check_venv || return
+            main
+            ;;
+        2)
+            edit_wipi_settings
+            ;;
+        3)
+            # Call uninstall_wipi directly instead of re-executing the script
+            check_root
+            uninstall_wipi
+            exit 0
+            ;;
+        4)
+            print_status "Exiting..."
+            exit 0
+            ;;
+        *)
+            print_error "Invalid choice"
+            display_main_menu
+            ;;
+    esac
+}
+
+# Function to edit WiPi settings
+edit_wipi_settings() {
+    print_section_header "Edit WiPi Settings"
+    
+    # Check if WiPi is installed
+    if [ ! -f "/home/pi/wipi/wipi.py" ]; then
+        print_error "WiPi is not installed"
+        print_status "Please install WiPi first"
+        display_main_menu
+        return 1
+    fi
+    
+    # Check if running as root
+    check_root
+    
+    # Extract current settings from wipi.py
+    print_status "Reading current settings..."
+    
+    # Read the current settings using grep
+    current_ssid=$(grep -oP 'AP_SSID = "\K[^"]*' /home/pi/wipi/wipi.py)
+    current_password=$(grep -oP 'AP_PASSWORD = "\K[^"]*' /home/pi/wipi/wipi.py)
+    current_ip=$(grep -oP 'AP_IP_ADDRESS = "\K[^"]*' /home/pi/wipi/wipi.py)
+    current_interval=$(grep -oP 'CHECK_INTERVAL = \K[0-9]+' /home/pi/wipi/wipi.py)
+    
+    # Display current settings
+    echo ""
+    echo -e "Current Settings:"
+    echo -e "  SSID: ${YELLOW}${current_ssid:-METAR-Pi}${NC}"
+    echo -e "  Password: ${YELLOW}${current_password:-METAR-Pi}${NC}"
+    echo -e "  IP Address: ${YELLOW}${current_ip:-192.168.8.1}${NC}"
+    echo -e "  Check Interval: ${YELLOW}${current_interval:-120}${NC} seconds"
+    echo ""
+    
+    # Ask if user wants to edit settings
+    read -p "$(echo -e "${CYAN}Do you want to edit these settings? [Y/n]: ${NC}")" edit_settings
+    if [[ $edit_settings =~ ^[Nn]$ ]]; then
+        display_main_menu
+        return 0
+    fi
+    
+    print_status "Let's update your settings..."
+    echo ""
+    
+    # Get new SSID
+    read -p "$(echo -e "${CYAN}Enter the Access Point SSID [${current_ssid:-METAR-Pi}]: ${NC}")" new_ssid
+    new_ssid=${new_ssid:-${current_ssid:-METAR-Pi}}
+    
+    # Get new password
+    read -p "$(echo -e "${CYAN}Enter the Access Point password [${current_password:-METAR-Pi}]: ${NC}")" new_password
+    new_password=${new_password:-${current_password:-METAR-Pi}}
+    
+    # IP Address Selection
+    echo ""
+    echo -e "Choose an IP scheme:"
+    echo -e "  ${BOLD}1${NC}. 192.168.x.x (common for home networks)"
+    echo -e "  ${BOLD}2${NC}. 10.10.x.x (alternative scheme)"
+    echo ""
+    
+    read -p "$(echo -e "${CYAN}Your choice [1]: ${NC}")" ip_scheme
+    ip_scheme=${ip_scheme:-1}
+    
+    case $ip_scheme in
+        1)
+            ip_prefix="192.168"
+            ;;
+        2)
+            ip_prefix="10.10"
+            ;;
+        *)
+            print_error "Invalid choice, using 192.168.x.x"
+            ip_prefix="192.168"
+            ;;
+    esac
+    
+    # Get third octet
+    while true; do
+        read -p "$(echo -e "${CYAN}Input the 3rd number set (0-255) [8]: ${NC}")" third_octet
+        third_octet=${third_octet:-8}
+        
+        if [[ "$third_octet" =~ ^[0-9]+$ ]] && [ "$third_octet" -ge 0 ] && [ "$third_octet" -le 255 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 0 and 255"
+        fi
+    done
+    
+    # Get fourth octet
+    while true; do
+        read -p "$(echo -e "${CYAN}Input the 4th number set (1-254) [1]: ${NC}")" fourth_octet
+        fourth_octet=${fourth_octet:-1}
+        
+        if [[ "$fourth_octet" =~ ^[0-9]+$ ]] && [ "$fourth_octet" -ge 1 ] && [ "$fourth_octet" -le 254 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 1 and 254"
+        fi
+    done
+    
+    # Construct the new IP address
+    new_ip="${ip_prefix}.${third_octet}.${fourth_octet}"
+    
+    # Get new check interval
+    while true; do
+        read -p "$(echo -e "${CYAN}Enter check interval in seconds (30-3600) [${current_interval:-120}]: ${NC}")" new_interval
+        new_interval=${new_interval:-${current_interval:-120}}
+        
+        if [[ "$new_interval" =~ ^[0-9]+$ ]] && [ "$new_interval" -ge 30 ] && [ "$new_interval" -le 3600 ]; then
+            break
+        else
+            print_error "Please enter a valid number between 30 and 3600 seconds"
+        fi
+    done
+    
+    # Display the new settings for confirmation
+    echo ""
+    echo -e "New Settings:"
+    echo -e "  SSID: ${YELLOW}${new_ssid}${NC}"
+    echo -e "  Password: ${YELLOW}${new_password}${NC}"
+    echo -e "  IP Address: ${YELLOW}${new_ip}${NC}"
+    echo -e "  Check Interval: ${YELLOW}${new_interval}${NC} seconds"
+    echo ""
+    
+    # Confirm changes
+    read -p "$(echo -e "${CYAN}Apply these settings? [Y/n]: ${NC}")" confirm_changes
+    if [[ $confirm_changes =~ ^[Nn]$ ]]; then
+        print_warning "Settings update cancelled"
+        display_main_menu
+        return 0
+    fi
+    
+    # Update the settings in wipi.py
+    print_status "Updating settings..."
+    
+    # Create a backup of wipi.py
+    cp /home/pi/wipi/wipi.py /home/pi/wipi/wipi.py.bak
+    
+    # Update the settings in wipi.py
+    sed -i "s/AP_SSID = \".*\"/AP_SSID = \"$new_ssid\"/" /home/pi/wipi/wipi.py
+    sed -i "s/AP_PASSWORD = \".*\"/AP_PASSWORD = \"$new_password\"/" /home/pi/wipi/wipi.py
+    sed -i "s/AP_IP_ADDRESS = \".*\"/AP_IP_ADDRESS = \"$new_ip\"/" /home/pi/wipi/wipi.py
+    sed -i "s/CHECK_INTERVAL = [0-9]*/CHECK_INTERVAL = $new_interval/" /home/pi/wipi/wipi.py
+    
+    if [ $? -eq 0 ]; then
+        print_success "Settings updated successfully"
+        
+        # Remove any existing config.json files to ensure they're not used
+        rm -f /home/pi/wipi/config.json /etc/wipi/config.json
+        
+        # Restart the WiPi service
+        print_status "Restarting WiPi service..."
+        systemctl restart wipi.service
+        
+        if [ $? -eq 0 ]; then
+            print_success "WiPi service restarted successfully"
+        else
+            print_error "Failed to restart WiPi service"
+        fi
+    else
+        print_error "Failed to update settings"
+        print_status "Restoring backup..."
+        mv /home/pi/wipi/wipi.py.bak /home/pi/wipi/wipi.py
+    fi
+    
+    display_main_menu
+    return 0
+}
+
+# Main installation function
+main() {
+    # Fix line endings if needed
+    if grep -q $'\r' "$0"; then
+        echo "Fixing line endings..."
+        sed -i 's/\r$//' "$0"
+        exec "$0" "$@"
+    fi
+    
+    # Check for uninstall flag
+    if [ "$1" == "--uninstall" ]; then
+        check_root
+        uninstall_wipi
+        exit 0
+    fi
+    
+    print_section_header "WiPi - Auto WiFi Broadcasting Installation"
+    
+    # Check if running as root
+    check_root
+    
+    # Check for NetworkManager
+    check_network_manager
     
     # Install required Python packages
     install_python_packages
@@ -621,13 +925,6 @@ main() {
     # Always run the configuration step
     configure_wipi
     
-    # Remove the old config file to avoid dual SSIDs
-    if [ -f /etc/wipi/config.json ]; then
-        print_status "Removing old configuration file at /etc/wipi/config.json"
-        rm -f /etc/wipi/config.json
-        print_success "Old configuration file removed"
-    fi
-    
     # Clean up any existing NetworkManager connections related to WiPi
     print_status "Cleaning up existing NetworkManager connections..."
     
@@ -654,5 +951,5 @@ main() {
     display_completion
 }
 
-# Run the main installation function with all arguments
-main "$@"
+# Start the script by displaying the main menu
+display_main_menu

@@ -73,13 +73,14 @@ def is_service_running(pid_file):
 def install_systemd_service():
     """Install WiPi as a systemd service."""
     try:
-        # Get the absolute path to the wipi_service.py script
-        script_path = os.path.abspath(__file__)
+        # Use the installed path instead of current script path
+        script_path = "/home/pi/wipi/wipi_service.py"
         
         # Create the service file content
         service_content = f"""[Unit]
 Description=WiPi Auto WiFi Broadcasting Service
-After=network.target
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
 
 [Service]
 ExecStart=/usr/bin/python3 {script_path} --daemon
@@ -139,7 +140,7 @@ def uninstall_systemd_service():
         print(f"Error: Failed to uninstall systemd service: {e}")
         return False
 
-def run_daemon(config_path):
+def run_daemon():
     """Run WiPi as a daemon process."""
     # PID file path
     pid_dir = "/var/run"
@@ -167,7 +168,7 @@ def run_daemon(config_path):
     
     try:
         # Initialize and run WiPi
-        wipi = WiPi(config_path=config_path)
+        wipi = WiPi()
         logger.info("Starting WiPi daemon")
         wipi.run()
     except Exception as e:
@@ -181,20 +182,11 @@ def run_daemon(config_path):
 def main():
     """Main entry point for the service wrapper."""
     parser = argparse.ArgumentParser(description="WiPi Service Wrapper")
-    parser.add_argument("-c", "--config", default="/home/pi/wipi/config.json", help="Path to configuration file")
     parser.add_argument("-d", "--daemon", action="store_true", help="Run as a daemon")
     parser.add_argument("--install", action="store_true", help="Install as a systemd service")
     parser.add_argument("--uninstall", action="store_true", help="Uninstall the systemd service")
     parser.add_argument("--status", action="store_true", help="Check if the service is running")
     args = parser.parse_args()
-    
-    # Create config directory if it doesn't exist
-    config_dir = os.path.dirname(args.config)
-    if not os.path.exists(config_dir):
-        try:
-            os.makedirs(config_dir, exist_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to create config directory: {e}")
     
     # Handle command line arguments
     if args.install:
@@ -213,10 +205,10 @@ def main():
             print("WiPi service is not running")
             return False
     elif args.daemon:
-        return run_daemon(args.config)
+        return run_daemon()
     else:
         # If no specific action, run WiPi directly (not as a daemon)
-        wipi = WiPi(config_path=args.config)
+        wipi = WiPi()
         wipi.run()
         return True
 
