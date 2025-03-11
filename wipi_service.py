@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 WiPi Service Wrapper
-Runs the WiPi auto WiFi broadcasting service as a daemon.
+
+This script provides a service wrapper for the WiPi application.
+It handles daemonization, PID file management, and systemd integration.
 """
 
 import os
@@ -11,6 +13,7 @@ import signal
 import logging
 import argparse
 import subprocess
+import atexit
 from pathlib import Path
 
 # Import the WiPi class from wipi.py
@@ -26,191 +29,233 @@ except ImportError:
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/var/log/wipi_service.log', mode='a')
-    ]
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('wipi_service')
+logger = logging.getLogger('wipi-service')
 
-def create_pid_file(pid_file):
-    """Create a PID file for the service."""
+# Default paths
+PID_FILE = '/var/run/wipi.pid'
+LOG_FILE = '/var/log/wipi.log'
+# Default installation directory
+INSTALL_DIR = '/home/pi/wipi'
+
+
+def daemonize():
+    """
+    Daemonize the process by forking twice and detaching from the terminal.
+    """
+    # First fork
     try:
-        with open(pid_file, 'w') as f:
-            f.write(str(os.getpid()))
-        logger.debug(f"Created PID file: {pid_file}")
-    except Exception as e:
-        logger.error(f"Failed to create PID file: {e}")
-
-def remove_pid_file(pid_file):
-    """Remove the PID file when the service stops."""
-    try:
-        if os.path.exists(pid_file):
-            os.remove(pid_file)
-            logger.debug(f"Removed PID file: {pid_file}")
-    except Exception as e:
-        logger.error(f"Failed to remove PID file: {e}")
-
-def is_service_running(pid_file):
-    """Check if the service is already running."""
-    if not os.path.exists(pid_file):
-        return False
+        pid = os.fork()
+        if pid > 0:
+            # Exit first parent
+            sys.exit(0)
+    except OSError as e:
+        logger.error(f"Fork #1 failed: {e}")
+        sys.exit(1)
     
+    # Decouple from parent environment
+    os.chdir('/')
+    os.setsid()
+    os.umask(0)
+    
+    # Second fork
     try:
-        with open(pid_file, 'r') as f:
-            pid = int(f.read().strip())
+        pid = os.fork()
+        if pid > 0:
+            # Exit second parent
+            sys.exit(0)
+    except OSError as e:
+        logger.error(f"Fork #2 failed: {e}")
+        sys.exit(1)
+    
+    # Redirect standard file descriptors
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    with open('/dev/null', 'r') as stdin_file:
+        os.dup2(stdin_file.fileno(), sys.stdin.fileno())
+    
+    with open(LOG_FILE, 'a+') as stdout_file:
+        os.dup2(stdout_file.fileno(), sys.stdout.fileno())
+        os.dup2(stdout_file.fileno(), sys.stderr.fileno())
+    
+    # Write PID file
+    with open(PID_FILE, 'w') as pid_file:
+        pid_file.write(str(os.getpid()))
+    
+    # Register function to remove PID file on exit
+    atexit.register(lambda: os.remove(PID_FILE) if os.path.exists(PID_FILE) else None)
+
+
+def run_daemon():
+    """
+    Run the WiPi service as a daemon.
+    """
+    # Check if already running
+    if os.path.exists(PID_FILE):
+        with open(PID_FILE, 'r') as pid_file:
+            pid = pid_file.read().strip()
         
-        # Check if process with this PID exists
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, ValueError, FileNotFoundError):
-        # Process not running or PID file is invalid
-        return False
-    except Exception as e:
-        logger.error(f"Error checking if service is running: {e}")
-        return False
+        try:
+            # Check if process is still running
+            os.kill(int(pid), 0)
+            logger.error(f"WiPi service is already running with PID {pid}")
+            sys.exit(1)
+        except (OSError, ValueError):
+            # Process not running, remove stale PID file
+            logger.warning(f"Removing stale PID file for PID {pid}")
+            os.remove(PID_FILE)
+    
+    # Daemonize the process
+    daemonize()
+    
+    # Run the WiPi service
+    wipi = WiPi()
+    wipi.run()
+
 
 def install_systemd_service():
-    """Install WiPi as a systemd service."""
-    try:
-        # Use the installed path instead of current script path
-        script_path = "/home/pi/wipi/wipi_service.py"
-        
-        # Create the service file content
-        service_content = f"""[Unit]
-Description=WiPi Auto WiFi Broadcasting Service
+    """
+    Install the WiPi service as a systemd service.
+    """
+    if os.geteuid() != 0:
+        logger.error("This command must be run as root")
+        sys.exit(1)
+    
+    # Ensure the installation directory exists
+    os.makedirs(INSTALL_DIR, exist_ok=True)
+    
+    # Get the paths to the scripts
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    service_script = os.path.join(INSTALL_DIR, 'wipi_service.py')
+    wipi_script = os.path.join(INSTALL_DIR, 'wipi.py')
+    
+    # Copy the scripts to the installation directory if not already there
+    if os.path.abspath(__file__) != service_script:
+        logger.info(f"Copying scripts to {INSTALL_DIR}")
+        import shutil
+        try:
+            shutil.copy2(os.path.join(current_dir, 'wipi_service.py'), service_script)
+            shutil.copy2(os.path.join(current_dir, 'wipi.py'), wipi_script)
+            # Make the scripts executable
+            os.chmod(service_script, 0o755)
+            os.chmod(wipi_script, 0o755)
+            # Set ownership to pi user if running as root
+            if os.geteuid() == 0:
+                import pwd
+                try:
+                    pi_uid = pwd.getpwnam('pi').pw_uid
+                    pi_gid = pwd.getpwnam('pi').pw_gid
+                    os.chown(service_script, pi_uid, pi_gid)
+                    os.chown(wipi_script, pi_uid, pi_gid)
+                    os.chown(INSTALL_DIR, pi_uid, pi_gid)
+                except KeyError:
+                    logger.warning("Could not find pi user, not changing ownership")
+        except Exception as e:
+            logger.error(f"Failed to copy scripts: {e}")
+            sys.exit(1)
+    
+    # Create the service file
+    service_content = f"""[Unit]
+Description=WiPi Auto WiFi Broadcasting
 After=network.target NetworkManager.service
 Wants=NetworkManager.service
 
 [Service]
-ExecStart=/usr/bin/python3 {script_path} --daemon
-Restart=on-failure
-User=root
-Group=root
 Type=simple
+ExecStart=/usr/bin/python3 {service_script} --daemon
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 """
-        
-        # Write the service file
-        service_file = "/etc/systemd/system/wipi.service"
-        with open(service_file, 'w') as f:
-            f.write(service_content)
-        
-        # Set permissions
-        os.chmod(service_file, 0o644)
-        
-        # Reload systemd, enable and start the service
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "enable", "wipi.service"], check=True)
-        subprocess.run(["systemctl", "start", "wipi.service"], check=True)
-        
-        logger.info("WiPi service installed and started successfully")
-        print("WiPi service installed and started successfully")
-        print("You can check its status with: systemctl status wipi.service")
-        return True
     
+    # Write the service file
+    service_path = '/etc/systemd/system/wipi.service'
+    try:
+        with open(service_path, 'w') as service_file:
+            service_file.write(service_content)
+        
+        # Reload systemd and enable the service
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+        subprocess.run(['systemctl', 'enable', 'wipi.service'], check=True)
+        
+        logger.info(f"WiPi service installed at {service_path}")
+        logger.info("To start the service, run: sudo systemctl start wipi.service")
     except Exception as e:
-        logger.error(f"Failed to install systemd service: {e}")
-        print(f"Error: Failed to install systemd service: {e}")
-        return False
+        logger.error(f"Failed to install service: {e}")
+        sys.exit(1)
+
 
 def uninstall_systemd_service():
-    """Uninstall the WiPi systemd service."""
+    """
+    Uninstall the WiPi systemd service.
+    """
+    if os.geteuid() != 0:
+        logger.error("This command must be run as root")
+        sys.exit(1)
+    
+    service_path = '/etc/systemd/system/wipi.service'
+    
     try:
         # Stop and disable the service
-        subprocess.run(["systemctl", "stop", "wipi.service"], check=False)
-        subprocess.run(["systemctl", "disable", "wipi.service"], check=False)
+        subprocess.run(['systemctl', 'stop', 'wipi.service'], check=False)
+        subprocess.run(['systemctl', 'disable', 'wipi.service'], check=False)
         
         # Remove the service file
-        service_file = "/etc/systemd/system/wipi.service"
-        if os.path.exists(service_file):
-            os.remove(service_file)
-        
-        # Reload systemd
-        subprocess.run(["systemctl", "daemon-reload"], check=False)
-        
-        logger.info("WiPi service uninstalled successfully")
-        print("WiPi service uninstalled successfully")
-        return True
-    
+        if os.path.exists(service_path):
+            os.remove(service_path)
+            subprocess.run(['systemctl', 'daemon-reload'], check=False)
+            logger.info("WiPi service uninstalled successfully")
+        else:
+            logger.warning(f"Service file {service_path} not found")
     except Exception as e:
-        logger.error(f"Failed to uninstall systemd service: {e}")
-        print(f"Error: Failed to uninstall systemd service: {e}")
-        return False
+        logger.error(f"Failed to uninstall service: {e}")
+        sys.exit(1)
 
-def run_daemon():
-    """Run WiPi as a daemon process."""
-    # PID file path
-    pid_dir = "/var/run"
-    if not os.path.exists(pid_dir) or not os.access(pid_dir, os.W_OK):
-        pid_dir = "/tmp"
-    pid_file = os.path.join(pid_dir, "wipi.pid")
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="WiPi Service Wrapper")
     
-    # Check if already running
-    if is_service_running(pid_file):
-        logger.error("WiPi service is already running")
-        print("Error: WiPi service is already running")
-        return False
+    # Service management options
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--daemon", action="store_true", help="Run as a daemon")
+    group.add_argument("--install-service", action="store_true", help="Install systemd service")
+    group.add_argument("--uninstall-service", action="store_true", help="Uninstall systemd service")
+    group.add_argument("--run", action="store_true", help="Run in foreground (for testing)")
     
-    # Create PID file
-    create_pid_file(pid_file)
+    # Logging options
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     
-    # Setup signal handlers
-    def signal_handler(sig, frame):
-        logger.info(f"Received signal {sig}, shutting down...")
-        remove_pid_file(pid_file)
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    try:
-        # Initialize and run WiPi
-        wipi = WiPi()
-        logger.info("Starting WiPi daemon")
-        wipi.run()
-    except Exception as e:
-        logger.error(f"Error in WiPi daemon: {e}")
-    finally:
-        # Clean up
-        remove_pid_file(pid_file)
-    
-    return True
+    return parser.parse_args()
+
 
 def main():
-    """Main entry point for the service wrapper."""
-    parser = argparse.ArgumentParser(description="WiPi Service Wrapper")
-    parser.add_argument("-d", "--daemon", action="store_true", help="Run as a daemon")
-    parser.add_argument("--install", action="store_true", help="Install as a systemd service")
-    parser.add_argument("--uninstall", action="store_true", help="Uninstall the systemd service")
-    parser.add_argument("--status", action="store_true", help="Check if the service is running")
-    args = parser.parse_args()
+    """Main entry point."""
+    # Parse command-line arguments
+    args = parse_args()
     
-    # Handle command line arguments
-    if args.install:
-        return install_systemd_service()
-    elif args.uninstall:
-        return uninstall_systemd_service()
-    elif args.status:
-        pid_file = "/var/run/wipi.pid"
-        if not os.path.exists(pid_file):
-            pid_file = "/tmp/wipi.pid"
-        
-        if is_service_running(pid_file):
-            print("WiPi service is running")
-            return True
-        else:
-            print("WiPi service is not running")
-            return False
-    elif args.daemon:
-        return run_daemon()
-    else:
-        # If no specific action, run WiPi directly (not as a daemon)
+    # Configure logging
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    
+    # Process commands
+    if args.daemon:
+        run_daemon()
+    elif args.install_service:
+        install_systemd_service()
+    elif args.uninstall_service:
+        uninstall_systemd_service()
+    elif args.run:
+        # Run in foreground (for testing)
         wipi = WiPi()
         wipi.run()
-        return True
+
 
 if __name__ == "__main__":
-    sys.exit(0 if main() else 1)
+    main()
