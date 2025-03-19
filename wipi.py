@@ -73,19 +73,19 @@ class WiPi:
         # Initialize status
         self.update_status()
         
-        # Restart settings.service on startup
-        logger.info("Restarting settings.service during WiPi startup")
+        # Restart NetworkManager on startup - Changed from settings.service
+        logger.info("Restarting NetworkManager during WiPi startup")
         try:
             subprocess.run(
-                ["sudo", "systemctl", "restart", "settings.service"],
+                ["sudo", "systemctl", "restart", "NetworkManager"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=AP_COMMAND_TIMEOUT
             )
-            logger.info("Successfully restarted settings.service")
+            logger.info("Successfully restarted NetworkManager")
         except Exception as e:
-            logger.error(f"Failed to restart settings.service: {e}")
+            logger.error(f"Failed to restart NetworkManager: {e}")
         
         logger.info(f"WiPi initialized with SSID: {AP_SSID}, Password: {'<hidden>' if not OPEN_AP else 'None (Open)'}")
         
@@ -124,19 +124,19 @@ class WiPi:
         if self.ap_active:
             self.deactivate_ap()
             
-        # Restart settings.service on shutdown
-        logger.info("Restarting settings.service during WiPi shutdown")
+        # Restart NetworkManager on shutdown - Changed from settings.service
+        logger.info("Restarting NetworkManager during WiPi shutdown")
         try:
             subprocess.run(
-                ["sudo", "systemctl", "restart", "settings.service"],
+                ["sudo", "systemctl", "restart", "NetworkManager"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=AP_COMMAND_TIMEOUT
             )
-            logger.info("Successfully restarted settings.service")
+            logger.info("Successfully restarted NetworkManager")
         except Exception as e:
-            logger.error(f"Failed to restart settings.service: {e}")
+            logger.error(f"Failed to restart NetworkManager: {e}")
             
         sys.exit(0)
     
@@ -533,19 +533,19 @@ class WiPi:
                     logger.info("Successfully activated existing hotspot profile")
                     self.ap_active = True
                     
-                    # Restart settings.service to ensure it binds to the new network configuration
-                    logger.info("Restarting settings.service to bind to new network configuration")
+                    # Restart NetworkManager to ensure proper network configuration - Changed from settings.service
+                    logger.info("Restarting NetworkManager to bind to new network configuration")
                     try:
                         subprocess.run(
-                            ["sudo", "systemctl", "restart", "settings.service"],
+                            ["sudo", "systemctl", "restart", "NetworkManager"],
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE,
                             check=False,
                             timeout=AP_COMMAND_TIMEOUT
                         )
-                        logger.info("Successfully restarted settings.service")
+                        logger.info("Successfully restarted NetworkManager")
                     except Exception as e:
-                        logger.error(f"Failed to restart settings.service: {e}")
+                        logger.error(f"Failed to restart NetworkManager: {e}")
                     
                     return True
                 else:
@@ -635,19 +635,19 @@ class WiPi:
                     logger.info(f"AP mode activated successfully with {method['name']}")
                     self.ap_active = True
                     
-                    # Restart settings.service to ensure it binds to the new network configuration
-                    logger.info("Restarting settings.service to bind to new network configuration")
+                    # Restart NetworkManager to ensure proper network configuration - Changed from settings.service
+                    logger.info("Restarting NetworkManager to bind to new network configuration")
                     try:
                         subprocess.run(
-                            ["sudo", "systemctl", "restart", "settings.service"],
+                            ["sudo", "systemctl", "restart", "NetworkManager"],
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE,
                             check=False,
                             timeout=AP_COMMAND_TIMEOUT
                         )
-                        logger.info("Successfully restarted settings.service")
+                        logger.info("Successfully restarted NetworkManager")
                     except Exception as e:
-                        logger.error(f"Failed to restart settings.service: {e}")
+                        logger.error(f"Failed to restart NetworkManager: {e}")
                     
                     return True
                 else:
@@ -960,3 +960,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
