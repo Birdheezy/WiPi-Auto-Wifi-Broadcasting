@@ -73,6 +73,20 @@ class WiPi:
         # Initialize status
         self.update_status()
         
+        # Restart settings.service on startup
+        logger.info("Restarting settings.service during WiPi startup")
+        try:
+            subprocess.run(
+                ["sudo", "systemctl", "restart", "settings.service"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=AP_COMMAND_TIMEOUT
+            )
+            logger.info("Successfully restarted settings.service")
+        except Exception as e:
+            logger.error(f"Failed to restart settings.service: {e}")
+        
         logger.info(f"WiPi initialized with SSID: {AP_SSID}, Password: {'<hidden>' if not OPEN_AP else 'None (Open)'}")
         
     def check_dependencies(self):
@@ -109,6 +123,21 @@ class WiPi:
         self.running = False
         if self.ap_active:
             self.deactivate_ap()
+            
+        # Restart settings.service on shutdown
+        logger.info("Restarting settings.service during WiPi shutdown")
+        try:
+            subprocess.run(
+                ["sudo", "systemctl", "restart", "settings.service"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=AP_COMMAND_TIMEOUT
+            )
+            logger.info("Successfully restarted settings.service")
+        except Exception as e:
+            logger.error(f"Failed to restart settings.service: {e}")
+            
         sys.exit(0)
     
     def update_status(self):
