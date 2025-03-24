@@ -33,11 +33,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger('wipi-service')
 
-# Default paths
+# Update the paths to be relative to the installation directory
+INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+VENV_DIR = os.path.dirname(INSTALL_DIR)  # This will be set by the installer
 PID_FILE = '/var/run/wipi.pid'
 LOG_FILE = '/var/log/wipi.log'
-# Default installation directory
-INSTALL_DIR = '/home/pi/wipi'
+
+# Add a function to activate the venv
+def activate_venv():
+    """Activate the virtual environment if not already activated."""
+    if not hasattr(sys, 'real_prefix') and not hasattr(sys, 'base_prefix'):
+        venv_activate = os.path.join(VENV_DIR, 'bin', 'activate_this.py')
+        if os.path.exists(venv_activate):
+            with open(venv_activate) as f:
+                exec(f.read(), {'__file__': venv_activate})
 
 
 def daemonize():
@@ -237,6 +246,9 @@ def parse_args():
 
 def main():
     """Main entry point."""
+    # Activate venv if needed
+    activate_venv()
+    
     # Parse command-line arguments
     args = parse_args()
     
