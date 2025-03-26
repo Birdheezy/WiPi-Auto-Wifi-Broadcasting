@@ -115,6 +115,9 @@ install_dependencies() {
     
     # Set up virtual environment
     setup_venv
+
+    # Add to install_dependencies function
+    verify_networkmanager
 }
 
 # Function to create and configure WiPi service
@@ -128,8 +131,8 @@ Wants=NetworkManager.service
 
 [Service]
 Type=simple
-ExecStart=${VENV_DIR}/bin/python ${INSTALL_DIR}/wipi_service.py --daemon
-Environment=PYTHONPATH=${INSTALL_DIR}
+ExecStart=/home/pi/wipi/wipi/bin/python /home/pi/wipi/wipi_service.py --daemon
+Environment=PYTHONPATH=/home/pi/wipi
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -138,6 +141,9 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+
+    # Set correct permissions
+    chmod 644 /etc/systemd/system/wipi.service
 }
 
 # Function to modify WiPi configuration
@@ -240,36 +246,57 @@ advanced_install() {
 download_files() {
     log_info "Downloading WiPi files..."
     
-    # Create temporary directory for downloads
-    local temp_dir=$(mktemp -d)
+    # Create backup first
+    backup_config
     
-    # Download the files
-    if ! curl -s -o "${temp_dir}/wipi.py" "${GITHUB_RAW_URL}/wipi.py"; then
-        log_error "Failed to download wipi.py"
+    # Create temporary directory with error handling
+    local temp_dir
+    temp_dir=$(mktemp -d) || {
+        log_error "Failed to create temporary directory"
+        exit 1
+    }
+    
+    # Download with better error handling
+    local files=("wipi.py" "wipi_service.py")
+    for file in "${files[@]}"; do
+        if ! curl -s -S -f -o "${temp_dir}/${file}" "${GITHUB_RAW_URL}/${file}"; then
+            log_error "Failed to download ${file}"
+            rm -rf "${temp_dir}"
+            exit 1
+        fi
+    done
+    
+    # Verify files before copying
+    for file in "${files[@]}"; do
+        if [ ! -s "${temp_dir}/${file}" ]; then
+            log_error "Downloaded file ${file} is empty"
+            rm -rf "${temp_dir}"
+            exit 1
+        fi
+    done
+    
+    # Create installation directory with error handling
+    mkdir -p "$INSTALL_DIR" || {
+        log_error "Failed to create installation directory"
         rm -rf "${temp_dir}"
         exit 1
-    fi
+    }
     
-    if ! curl -s -o "${temp_dir}/wipi_service.py" "${GITHUB_RAW_URL}/wipi_service.py"; then
-        log_error "Failed to download wipi_service.py"
+    # Copy files with error handling
+    cp "${temp_dir}"/* "$INSTALL_DIR/" || {
+        log_error "Failed to copy files to installation directory"
         rm -rf "${temp_dir}"
         exit 1
-    fi
-    
-    # Create installation directory
-    mkdir -p "$INSTALL_DIR"
-    
-    # Copy files to installation directory
-    cp "${temp_dir}/wipi.py" "${temp_dir}/wipi_service.py" "$INSTALL_DIR/"
+    }
     
     # Cleanup
     rm -rf "${temp_dir}"
     
-    # Set permissions
-    chmod 755 "$INSTALL_DIR"/*.py
-    chown -R pi:pi "$INSTALL_DIR"
+    # Set permissions with error handling
+    chmod 755 "$INSTALL_DIR"/*.py || log_error "Failed to set file permissions"
+    chown -R pi:pi "$INSTALL_DIR" || log_error "Failed to set file ownership"
     
-    log_info "Files downloaded successfully"
+    log_info "Files downloaded and installed successfully"
 }
 
 # Move this function up with other functions, before the main installation process
@@ -476,3 +503,34 @@ fi
 
 echo
 log_info "Installation complete!"
+
+# Add backup functionality
+backup_config() {
+    local backup_dir="${INSTALL_DIR}/backups/$(date +%Y%m%d_%H%M%S)"
+    log_info "Creating backup in ${backup_dir}"
+    mkdir -p "${backup_dir}"
+    
+    if [ -f "${INSTALL_DIR}/wipi.py" ]; then
+        cp "${INSTALL_DIR}/wipi.py" "${backup_dir}/"
+    fi
+    if [ -f "${INSTALL_DIR}/wipi_service.py" ]; then
+        cp "${INSTALL_DIR}/wipi_service.py" "${backup_dir}/"
+    fi
+    
+    log_info "Backup created successfully"
+}
+
+# Add to install_dependencies function
+verify_networkmanager() {
+    log_info "Verifying NetworkManager status..."
+    if ! systemctl is-active --quiet NetworkManager; then
+        log_info "Starting NetworkManager service..."
+        systemctl start NetworkManager
+        sleep 2
+        if ! systemctl is-active --quiet NetworkManager; then
+            log_error "Failed to start NetworkManager"
+            exit 1
+        fi
+    fi
+    log_info "NetworkManager is running"
+}

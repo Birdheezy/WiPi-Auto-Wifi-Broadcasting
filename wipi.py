@@ -382,9 +382,14 @@ class WiPi:
         try:
             # Get saved networks first
             saved_networks = self.get_saved_wifi_networks()
+            logger.debug(f"Found saved networks: {saved_networks}")
             
             if not saved_networks:
                 logger.warning("No saved WiFi networks found in NetworkManager")
+                # If no saved networks, we should activate AP mode
+                if not self.ap_active:
+                    logger.info("No saved networks, activating AP mode")
+                    self.activate_ap()
                 return []
             
             # Force a WiFi rescan by cycling the radio
@@ -399,7 +404,7 @@ class WiPi:
                           stderr=subprocess.PIPE, 
                           check=False)
             time.sleep(WIFI_ON_WAIT)  # Wait for the interface to stabilize
-            
+
             # Try up to 3 times to get scan results
             for attempt in range(3):
                 # Scan for available networks
@@ -417,7 +422,7 @@ class WiPi:
                     continue
                 
                 available_ssids = [line for line in scan_result.stdout.splitlines() if line]
-                logger.debug(f"Found {len(available_ssids)} available WiFi networks")
+                logger.debug(f"Found {len(available_ssids)} available networks: {available_ssids}")
                 
                 # Find intersection of saved and available networks
                 for ssid in saved_networks:
@@ -431,10 +436,20 @@ class WiPi:
                 time.sleep(SCAN_RETRY_WAIT)
             
             logger.info(f"Found {len(known_networks)} known networks: {', '.join(known_networks) if known_networks else 'None'}")
+            
+            # If no known networks found after all attempts, activate AP mode
+            if not known_networks and not self.ap_active:
+                logger.info("No known networks found after scanning, activating AP mode")
+                self.activate_ap()
+            
             return known_networks
             
         except Exception as e:
             logger.error(f"Error scanning for networks: {e}")
+            # On error, activate AP mode as fallback
+            if not self.ap_active:
+                logger.info("Error during network scan, activating AP mode as fallback")
+                self.activate_ap()
             return []
     
     def connect_to_wifi(self, ssid: str) -> bool:
@@ -442,35 +457,43 @@ class WiPi:
         logger.info(f"Attempting to connect to {ssid}")
         
         try:
-            # Check if we're already connected to this network
-            if self.current_wifi == ssid:
-                logger.info(f"Already connected to {ssid}")
-                return True
-                
-            # Attempt to connect
+            # Add timeout to prevent hanging
             result = subprocess.run(
                 ["nmcli", "connection", "up", ssid],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                check=False
+                check=False,
+                timeout=COMMAND_TIMEOUT  # Add timeout constant
             )
             
             if result.returncode != 0:
-                logger.error(f"Failed to connect to {ssid}: {result.stderr}")
-                
-                # Check if this is an authentication failure
-                if "auth" in result.stderr.lower() or "password" in result.stderr.lower():
-                    logger.warning(f"Authentication failed for {ssid}. Password may have changed.")
-                
+                # More specific error handling
+                if "auth" in result.stderr.lower():
+                    logger.error(f"Authentication failed for {ssid}. Password may be incorrect.")
+                elif "not found" in result.stderr.lower():
+                    logger.error(f"Network {ssid} not found.")
+                elif "timeout" in result.stderr.lower():
+                    logger.error(f"Connection timeout while connecting to {ssid}")
+                else:
+                    logger.error(f"Failed to connect to {ssid}: {result.stderr}")
+                return False
+            
+            # Add connection verification
+            time.sleep(WIFI_ON_WAIT)
+            if not self.is_wifi_connected():
+                logger.error(f"Connected to {ssid} but no network connectivity")
                 return False
             
             logger.info(f"Successfully connected to {ssid}")
             self.current_wifi = ssid
             return True
             
+        except subprocess.TimeoutExpired:
+            logger.error(f"Connection command timed out for {ssid}")
+            return False
         except Exception as e:
-            logger.error(f"Error connecting to {ssid}: {e}")
+            logger.error(f"Unexpected error connecting to {ssid}: {e}")
             return False
     
     def activate_ap(self) -> bool:
@@ -482,7 +505,7 @@ class WiPi:
         logger.info(f"Activating AP mode with SSID: {AP_SSID}")
         
         try:
-            # Ensure WiFi is enabled
+            # Ensure WiFi is enabled without restarting NetworkManager
             subprocess.run(
                 ["nmcli", "radio", "wifi", "on"],
                 stdout=subprocess.PIPE, 
@@ -533,19 +556,21 @@ class WiPi:
                     logger.info("Successfully activated existing hotspot profile")
                     self.ap_active = True
                     
-                    # Restart NetworkManager to ensure proper network configuration - Changed from settings.service
-                    logger.info("Restarting NetworkManager to bind to new network configuration")
-                    try:
-                        subprocess.run(
-                            ["sudo", "systemctl", "restart", "NetworkManager"],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            check=False,
-                            timeout=AP_COMMAND_TIMEOUT
-                        )
-                        logger.info("Successfully restarted NetworkManager")
-                    except Exception as e:
-                        logger.error(f"Failed to restart NetworkManager: {e}")
+                    # Only restart NetworkManager if AP activation was successful
+                    if self.ap_active:
+                        logger.info("AP mode activated, restarting NetworkManager to ensure proper configuration")
+                        try:
+                            subprocess.run(
+                                ["sudo", "systemctl", "restart", "NetworkManager"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                check=False,
+                                timeout=AP_COMMAND_TIMEOUT
+                            )
+                            time.sleep(WIFI_ON_WAIT)  # Wait for NetworkManager to be ready
+                            logger.info("Successfully restarted NetworkManager")
+                        except Exception as e:
+                            logger.error(f"Failed to restart NetworkManager: {e}")
                     
                     return True
                 else:
@@ -635,19 +660,21 @@ class WiPi:
                     logger.info(f"AP mode activated successfully with {method['name']}")
                     self.ap_active = True
                     
-                    # Restart NetworkManager to ensure proper network configuration - Changed from settings.service
-                    logger.info("Restarting NetworkManager to bind to new network configuration")
-                    try:
-                        subprocess.run(
-                            ["sudo", "systemctl", "restart", "NetworkManager"],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            check=False,
-                            timeout=AP_COMMAND_TIMEOUT
-                        )
-                        logger.info("Successfully restarted NetworkManager")
-                    except Exception as e:
-                        logger.error(f"Failed to restart NetworkManager: {e}")
+                    # Only restart NetworkManager if AP activation was successful
+                    if self.ap_active:
+                        logger.info("AP mode activated, restarting NetworkManager to ensure proper configuration")
+                        try:
+                            subprocess.run(
+                                ["sudo", "systemctl", "restart", "NetworkManager"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                check=False,
+                                timeout=AP_COMMAND_TIMEOUT
+                            )
+                            time.sleep(WIFI_ON_WAIT)  # Wait for NetworkManager to be ready
+                            logger.info("Successfully restarted NetworkManager")
+                        except Exception as e:
+                            logger.error(f"Failed to restart NetworkManager: {e}")
                     
                     return True
                 else:

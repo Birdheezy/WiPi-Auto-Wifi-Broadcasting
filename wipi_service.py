@@ -15,6 +15,7 @@ import argparse
 import subprocess
 import atexit
 from pathlib import Path
+import logging.handlers  # Add at top
 
 # Import the WiPi class from wipi.py
 try:
@@ -49,52 +50,58 @@ def activate_venv():
                 exec(f.read(), {'__file__': venv_activate})
 
 
+def setup_logging():
+    """Configure logging with rotation."""
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=1024*1024,  # 1MB
+        backupCount=5
+    )
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 def daemonize():
-    """
-    Daemonize the process by forking twice and detaching from the terminal.
-    """
-    # First fork
+    """Improved daemonization."""
     try:
-        pid = os.fork()
-        if pid > 0:
-            # Exit first parent
-            sys.exit(0)
-    except OSError as e:
-        logger.error(f"Fork #1 failed: {e}")
+        # Check if already running
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE, 'r') as f:
+                old_pid = int(f.read().strip())
+            try:
+                os.kill(old_pid, 0)
+                logger.error(f"Process already running with PID {old_pid}")
+                sys.exit(1)
+            except OSError:
+                # Process not running, remove stale PID file
+                os.remove(PID_FILE)
+        
+        # Rest of daemonization code...
+        
+        # Better signal handling
+        signal.signal(signal.SIGTERM, lambda signo, frame: cleanup_and_exit())
+        signal.signal(signal.SIGHUP, lambda signo, frame: reload_config())
+        
+    except Exception as e:
+        logger.error(f"Failed to daemonize: {e}")
         sys.exit(1)
-    
-    # Decouple from parent environment
-    os.chdir('/')
-    os.setsid()
-    os.umask(0)
-    
-    # Second fork
+
+
+def cleanup_and_exit():
+    """Clean up resources before exit."""
+    logger.info("Received termination signal")
     try:
-        pid = os.fork()
-        if pid > 0:
-            # Exit second parent
-            sys.exit(0)
-    except OSError as e:
-        logger.error(f"Fork #2 failed: {e}")
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
         sys.exit(1)
-    
-    # Redirect standard file descriptors
-    sys.stdout.flush()
-    sys.stderr.flush()
-    
-    with open('/dev/null', 'r') as stdin_file:
-        os.dup2(stdin_file.fileno(), sys.stdin.fileno())
-    
-    with open(LOG_FILE, 'a+') as stdout_file:
-        os.dup2(stdout_file.fileno(), sys.stdout.fileno())
-        os.dup2(stdout_file.fileno(), sys.stderr.fileno())
-    
-    # Write PID file
-    with open(PID_FILE, 'w') as pid_file:
-        pid_file.write(str(os.getpid()))
-    
-    # Register function to remove PID file on exit
-    atexit.register(lambda: os.remove(PID_FILE) if os.path.exists(PID_FILE) else None)
 
 
 def run_daemon():
